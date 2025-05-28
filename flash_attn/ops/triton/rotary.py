@@ -156,7 +156,7 @@ def apply_rotary(
     # Need this, otherwise Triton tries to launch from cuda:0 and we get
     # ValueError: Pointer argument (at 0) cannot be accessed from Triton (cpu tensor?)
     with torch.cuda.device(x.device.index):
-        torch.library.wrap_triton(rotary_kernel)[grid](
+        rotary_kernel[grid](
             output,  # data ptrs
             x,
             cos,

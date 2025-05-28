@@ -424,7 +424,7 @@ def _layer_norm_fwd_impl(
     if N > BLOCK_N:
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
     with torch.cuda.device(x.device.index):
-        torch.library.wrap_triton(_layer_norm_fwd_1pass_kernel)[(M,)](
+        _layer_norm_fwd_1pass_kernel[(M,)](
             x,
             out,
             weight,
@@ -788,7 +788,7 @@ def _layer_norm_bwd_impl(
     rows_per_program = math.ceil(M / sm_count)
     grid = (sm_count,)
     with torch.cuda.device(x.device.index):
-        torch.library.wrap_triton(_layer_norm_bwd_kernel)[grid](
+        _layer_norm_bwd_kernel[grid](
             x,
             weight,
             bias,

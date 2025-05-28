@@ -456,11 +456,13 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
         if softmax_scale is None:
             softmax_scale = qkv.shape[-1] ** (-0.5)
         q, k, v = qkv[:, :, 0].detach(), qkv[:, :, 1].detach(), qkv[:, :, 2].detach()
-        head_size_og = q.size(3)
-        if head_size_og % 8 != 0:
-            q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
-            k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
+        q_head_size_og = q.size(-1)
+        v_head_size_og = v.size(-1)
+        if q_head_size_og % 8 != 0:
+            q = torch.nn.functional.pad(q, [0, 8 - q_head_size_og % 8])
+            k = torch.nn.functional.pad(k, [0, 8 - q_head_size_og % 8])
+        if v_head_size_og % 8 != 0:
+            v = torch.nn.functional.pad(v, [0, 8 - v_head_size_og % 8])
         out_padded, softmax_lse, S_dmask, rng_state =  _wrapped_flash_attn_forward(
             q,
             k,
@@ -483,7 +485,7 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
             ctx.softcap = softcap
             ctx.alibi_slopes = alibi_slopes
             ctx.deterministic = deterministic
-        out = out_padded[..., :head_size_og]
+        out = out_padded[..., :v_head_size_og]
         return out if not return_softmax else (out, softmax_lse, S_dmask)
 
     @staticmethod
@@ -540,11 +542,20 @@ class FlashAttnVarlenQKVPackedFunc(torch.autograd.Function):
         if softmax_scale is None:
             softmax_scale = qkv.shape[-1] ** (-0.5)
         q, k, v = qkv[:, 0].detach(), qkv[:, 1].detach(), qkv[:, 2].detach()
-        head_size_og = q.size(2)
-        if head_size_og % 8 != 0:
-            q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
-            k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
+        q_head_size_og = q.size(-1)
+        v_head_size_og = v.size(-1)
+        print(f"q.shape:{q.shape} - before")
+        print(f"k.shape:{k.shape} - before")
+        print(f"v.shape:{v.shape} - before")
+        print(f"q_head_size_og:{q_head_size_og}, v_head_size_og:{v_head_size_og}")
+        if q_head_size_og % 8 != 0:
+            q = torch.nn.functional.pad(q, [0, 8 - q_head_size_og % 8])
+            k = torch.nn.functional.pad(k, [0, 8 - q_head_size_og % 8])
+        if v_head_size_og % 8 != 0:
+            v = torch.nn.functional.pad(v, [0, 8 - v_head_size_og % 8])
+        print(f"q.shape:{q.shape}")
+        print(f"k.shape:{k.shape}")
+        print(f"v.shape:{v.shape}") 
         out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_attn_varlen_forward(
             q,
             k,
@@ -573,7 +584,7 @@ class FlashAttnVarlenQKVPackedFunc(torch.autograd.Function):
             ctx.softcap = softcap
             ctx.alibi_slopes = alibi_slopes
             ctx.deterministic = deterministic
-        out = out_padded[..., :head_size_og]
+        out = out_padded[..., :v_head_size_og]
         return out if not return_softmax else (out, softmax_lse, S_dmask)
 
     @staticmethod
@@ -635,11 +646,13 @@ class FlashAttnKVPackedFunc(torch.autograd.Function):
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         k, v = kv[:, :, 0].detach(), kv[:, :, 1].detach()
-        head_size_og = q.size(3)
+        head_size_og = q.size(-1)
+        v_head_size_og = v.size(-1)
         if head_size_og % 8 != 0:
             q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
+        if v_head_size_og % 8 != 0:
+            v = torch.nn.functional.pad(v, [0, 8 - v_head_size_og % 8])
         out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_attn_forward(
             q,
             k,
@@ -662,7 +675,7 @@ class FlashAttnKVPackedFunc(torch.autograd.Function):
             ctx.softcap = softcap
             ctx.alibi_slopes = alibi_slopes
             ctx.deterministic = deterministic
-        out = out_padded[..., :head_size_og]
+        out = out_padded[..., :v_head_size_og]
         return out if not return_softmax else (out, softmax_lse, S_dmask)
 
     @staticmethod
@@ -726,11 +739,13 @@ class FlashAttnVarlenKVPackedFunc(torch.autograd.Function):
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         k, v = kv[:, 0].detach(), kv[:, 1].detach()
-        head_size_og = q.size(2)
-        if head_size_og % 8 != 0:
-            q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
-            k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
+        q_head_size_og = q.size(-1)
+        v_head_size_og = v.size(-1)
+        if q_head_size_og % 8 != 0:
+            q = torch.nn.functional.pad(q, [0, 8 - q_head_size_og % 8])
+            k = torch.nn.functional.pad(k, [0, 8 - q_head_size_og % 8])
+        if v_head_size_og % 8 != 0:
+            v = torch.nn.functional.pad(v, [0, 8 - v_head_size_og % 8])
         out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_attn_varlen_forward(
             q,
             k,
@@ -762,7 +777,8 @@ class FlashAttnVarlenKVPackedFunc(torch.autograd.Function):
             ctx.softcap = softcap
             ctx.alibi_slopes = alibi_slopes
             ctx.deterministic = deterministic
-        out = out_padded[..., :head_size_og]
+            ctx.q_head_size_og = q_head_size_og
+        out = out_padded[..., :v_head_size_og]
         return out if not return_softmax else (out, softmax_lse, S_dmask)
 
     @staticmethod
@@ -826,11 +842,13 @@ class FlashAttnFunc(torch.autograd.Function):
         )
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
-        head_size_og = q.size(3)
-        if head_size_og % 8 != 0:
-            q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
-            k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
+        q_head_size_og = q.size(-1)
+        v_head_size_og = v.size(-1)
+        if q_head_size_og % 8 != 0:
+            q = torch.nn.functional.pad(q, [0, 8 - q_head_size_og % 8])
+            k = torch.nn.functional.pad(k, [0, 8 - q_head_size_og % 8])
+        if v_head_size_og % 8 != 0:
+            v = torch.nn.functional.pad(v, [0, 8 - v_head_size_og % 8])
         out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_attn_forward(
             q,
             k,
@@ -853,17 +871,21 @@ class FlashAttnFunc(torch.autograd.Function):
             ctx.softcap = softcap
             ctx.alibi_slopes = alibi_slopes
             ctx.deterministic = deterministic
-        out = out_padded[..., :head_size_og]
+            ctx.q_head_size_og = q_head_size_og
+        out = out_padded[..., :v_head_size_og]
         return out if not return_softmax else (out, softmax_lse, S_dmask)
 
     @staticmethod
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, rng_state = ctx.saved_tensors
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
-        head_size_og = dout.size(3)
+        v_head_size_og = dout.size(3)
         dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
+        if v_head_size_og % 8 != 0:
+            dout_padded = torch.nn.functional.pad(dout, [0, 8 - v_head_size_og % 8])
+        print(f'dq.shape:{dq.shape}')
+        print(f'dk.shape:{dk.shape}')
+        print(f'dv.shape:{dv.shape}')
         _wrapped_flash_attn_backward(
             dout_padded,
             q,
@@ -884,9 +906,13 @@ class FlashAttnFunc(torch.autograd.Function):
             ctx.deterministic,
             rng_state=rng_state,
         )
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
-        dk = dk[..., : dout.shape[-1]]
+        print(f'end backward')
+        dq = dq[..., : ctx.q_head_size_og]  # We could have padded the head dimension
+        print(f'dq.shape:{dq.shape}')
+        dk = dk[..., : ctx.q_head_size_og]
+        print(f'dk.shape:{dk.shape}')
         dv = dv[..., : dout.shape[-1]]
+        print(f'dv.shape:{dv.shape}')
         return dq, dk, dv, None, None, None, None, None, None, None, None, None
 
 
@@ -917,11 +943,20 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         )
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
-        head_size_og = q.size(2)
-        if head_size_og % 8 != 0:
-            q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
-            k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
+        q_head_size_og = q.size(-1)
+        v_head_size_og = v.size(-1)
+        print(f"q.shape:{q.shape} - before")
+        print(f"k.shape:{k.shape} - before")
+        print(f"v.shape:{v.shape} - before")
+        print(f"q_head_size_og:{q_head_size_og}, v_head_size_og:{v_head_size_og}")
+        if q_head_size_og % 8 != 0:
+            q = torch.nn.functional.pad(q, [0, 8 - q_head_size_og % 8])
+            k = torch.nn.functional.pad(k, [0, 8 - q_head_size_og % 8])
+        if v_head_size_og % 8 != 0:
+            v = torch.nn.functional.pad(v, [0, 8 - v_head_size_og % 8])
+        print(f"q.shape:{q.shape}")
+        print(f"k.shape:{k.shape}")
+        print(f"v.shape:{v.shape}")
         out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_attn_varlen_forward(
             q,
             k,
@@ -953,18 +988,27 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             ctx.softcap = softcap
             ctx.alibi_slopes = alibi_slopes
             ctx.deterministic = deterministic
+            ctx.q_head_size_og = q_head_size_og
 
-        out = out_padded[..., :head_size_og]
+        out = out_padded[..., :v_head_size_og]
+        print(f"out_padded.shape:{out_padded.shape}")
+        print(f"out.shape:{out.shape}")
         return out if not return_softmax else (out, softmax_lse, S_dmask)
 
     @staticmethod
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, rng_state = ctx.saved_tensors
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
-        head_size_og = dout.size(2)
+        v_head_size_og = dout.size(-1)
         dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
+        print(f"q.shape:{q.shape}")
+        print(f"k.shape:{k.shape}")
+        print(f"v.shape:{v.shape}")
+        print(f"dq.shape:{dq.shape}")
+        print(f"dk.shape:{dk.shape}")
+        print(f"dv.shape:{dv.shape}")
+        if v_head_size_og % 8 != 0:
+            dout_padded = torch.nn.functional.pad(dout, [0, 8 - v_head_size_og % 8])
         _wrapped_flash_attn_varlen_backward(
             dout_padded,
             q,
@@ -989,8 +1033,8 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             ctx.deterministic,
             rng_state=rng_state,
         )
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
-        dk = dk[..., : dout.shape[-1]]
+        dq = dq[..., : ctx.q_head_size_og]  # We could have padded the head dimension
+        dk = dk[..., : ctx.q_head_size_og]
         dv = dv[..., : dout.shape[-1]]
         return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
