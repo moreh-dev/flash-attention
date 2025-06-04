@@ -322,12 +322,13 @@ mha_bwd(const at::Tensor &dout,                   // batch_size x seqlen_q x num
     auto softmax_d = torch::empty({batch_size, num_heads, seqlen_q}, opts.dtype(at::kFloat));
     at::Tensor dq_accum;
 
+    const ck_tile::index_t max_head_size = std::max(head_size, v_head_size);
     if (!deterministic) {
-        dq_accum = torch::zeros({1, batch_size, seqlen_q, num_heads, head_size}, opts.dtype(at::kFloat));
+        dq_accum = torch::zeros({1, batch_size, seqlen_q, num_heads, max_head_size}, opts.dtype(at::kFloat));
     } else {
-        const ck_tile::index_t kN0 = head_size <= 128 ? 128 : 64;
+        const ck_tile::index_t kN0 = max_head_size <= 128 ? 128 : 64;
         const ck_tile::index_t nsplits = ck_tile::integer_divide_ceil(seqlen_k, kN0);
-        dq_accum = torch::zeros({nsplits, batch_size, seqlen_q, num_heads, head_size}, opts.dtype(at::kFloat));
+        dq_accum = torch::zeros({nsplits, batch_size, seqlen_q, num_heads, max_head_size}, opts.dtype(at::kFloat));
     }
 
     at::Tensor dk_expanded, dv_expanded;
