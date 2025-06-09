@@ -1461,7 +1461,7 @@ def test_flash_attn_bwd_transpose(seqlen, d, causal, dtype):
     ).abs().max().item()
 
 
-@pytest.mark.parametrize("dtype", [torch.bfloat16])
+@pytest.mark.parametrize("dtype", [torch.float16])
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("d", [16, 32, 64])
 def test_flash_attn_bwd_varlen_overflow(d, causal, dtype):

@@ -10,13 +10,13 @@
 fmha_fwd_traits get_ck_fmha_fwd_traits(const mask_info &mask,
                                        std::string dtype,
                                        int head_size, 
-                                       int v_head_size, 
+                                       int head_size_v, 
                                        bool has_dropout,
                                        bool has_lse,
                                        bool enable_alibi)
 {
     return fmha_fwd_traits{head_size,
-                           v_head_size,
+                           head_size_v,
                            dtype,
                            false, // is_group_mode
                            true,  // is_v_rowmajor
@@ -177,15 +177,15 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
     int seqlen_q = sizes[1];
     int num_heads = sizes[2];
     const int head_size = sizes[3];
-    const int v_head_size = v.size(3);
+    const int head_size_v = v.size(3);
     const int seqlen_k = k.size(1);
     const int num_heads_k = k.size(2);
     const int num_heads_v = v.size(2);
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
     TORCH_CHECK(head_size <= 256, "CK only supports head dimension at most 256");
     TORCH_CHECK(head_size % 8 == 0, "query, key, value, and out_ must have a head_size that is a multiple of 8");
-    TORCH_CHECK(v_head_size <= 256, "CK only supports head dimension at most 256");
-    TORCH_CHECK(v_head_size % 8 == 0, "query, key, value, and out_ must have a head_size that is a multiple of 8");
+    TORCH_CHECK(head_size_v <= 256, "CK only supports head dimension at most 256");
+    TORCH_CHECK(head_size_v % 8 == 0, "query, key, value, and out_ must have a head_size that is a multiple of 8");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
     TORCH_CHECK(num_heads_v % num_heads_k == 0, "Number of heads in key/value must be equal");
 
@@ -223,7 +223,7 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
 
     CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size);
     CHECK_SHAPE(k, batch_size, seqlen_k, num_heads_k, head_size);
-    CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, v_head_size);
+    CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, head_size_v);
 
     at::Tensor out;
     if (out_.has_value()) {
@@ -231,13 +231,13 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
         TORCH_CHECK(out.dtype() == q_dtype, "Output must have the same dtype as inputs");
         CHECK_DEVICE(out);
         TORCH_CHECK(out.stride(-1) == 1, "Output tensor must have contiguous last dimension");
-        CHECK_SHAPE(out, batch_size, sizes[1], sizes[2], v_head_size);
+        CHECK_SHAPE(out, batch_size, sizes[1], sizes[2], head_size_v);
         if (seqlenq_ngroups_swapped) {
-            out = out.reshape({batch_size, num_heads_k, ngroups, v_head_size}).transpose(1, 2);
+            out = out.reshape({batch_size, num_heads_k, ngroups, head_size_v}).transpose(1, 2);
         }
     }
     else {
-        out = torch::empty({q.size(0), q.size(1), q.size(2), v_head_size}, q.options());
+        out = torch::empty({q.size(0), q.size(1), q.size(2), head_size_v}, q.options());
     }
 
     // Otherwise the kernel will be launched from cuda:0 device
@@ -284,7 +284,7 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
                 mask,
                 q_dtype_str,
                 head_size,
-                v_head_size,
+                head_size_v,
                 has_dropout,
                 has_lse,
                 alibi_slopes_.has_value());
@@ -300,7 +300,7 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
                 num_heads,
                 num_heads_k,
                 head_size,
-                v_head_size,
+                head_size_v,
                 q,
                 k,
                 v,
@@ -322,7 +322,7 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
     }
 
     if (seqlenq_ngroups_swapped) {
-        out = out.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, v_head_size});
+        out = out.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size_v});
         q = q.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size});
         softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
     }

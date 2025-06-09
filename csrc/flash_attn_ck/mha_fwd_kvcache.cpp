@@ -9,7 +9,7 @@
 
 fmha_fwd_appendkv_traits get_ck_fmha_fwd_appendkv_traits(std::string dtype,
                                                         int head_size,
-                                                        int v_head_size,
+                                                        int head_size_v,
                                                         int rotary_dim,
                                                         bool is_rotary_interleaved)
 {
@@ -18,7 +18,7 @@ fmha_fwd_appendkv_traits get_ck_fmha_fwd_appendkv_traits(std::string dtype,
                                           : rope_enum::none);
 
     return fmha_fwd_appendkv_traits{head_size,
-                                    v_head_size,
+                                    head_size_v,
                                     dtype,
                                     true,  // is_v_rowmajor
                                     rope_type};
@@ -27,12 +27,12 @@ fmha_fwd_appendkv_traits get_ck_fmha_fwd_appendkv_traits(std::string dtype,
 fmha_fwd_splitkv_traits get_ck_fmha_fwd_splitkv_traits(const mask_info &mask,
                                                        std::string dtype,
                                                        int head_size,
-                                                       int v_head_size,
+                                                       int head_size_v,
                                                        bool has_lse,
                                                        bool enable_alibi)
 {
     return fmha_fwd_splitkv_traits{head_size,
-                                   v_head_size,
+                                   head_size_v,
                                    dtype,
                                    false, // is_group_mode
                                    true, // is_v_rowmajor
@@ -272,9 +272,9 @@ fmha_fwd_splitkv_args get_ck_fmha_fwd_splitkv_args(bool has_lse,
 std::vector<at::Tensor>
 mha_fwd_kvcache(at::Tensor &q,                                      // batch_size x seqlen_q x num_heads x head_size
                 const at::Tensor &kcache,                           // batch_size_c x seqlen_k x num_heads_k x head_size or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-                const at::Tensor &vcache,                           // batch_size_c x seqlen_k x num_heads_k x v_head_size or num_blocks x page_block_size x num_heads_k x v_head_size if there's a block_table.
+                const at::Tensor &vcache,                           // batch_size_c x seqlen_k x num_heads_k x head_size_v or num_blocks x page_block_size x num_heads_k x head_size_v if there's a block_table.
                 std::optional<const at::Tensor> &k_,                // batch_size x seqlen_knew x num_heads_k x head_size
-                std::optional<const at::Tensor> &v_,                // batch_size x seqlen_knew x num_heads_k x v_head_size
+                std::optional<const at::Tensor> &v_,                // batch_size x seqlen_knew x num_heads_k x head_size_v
                 std::optional<const at::Tensor> &seqlens_k_,        // batch_size
                 std::optional<const at::Tensor> &rotary_cos_,       // seqlen_ro x (rotary_dim / 2)
                 std::optional<const at::Tensor> &rotary_sin_,       // seqlen_ro x (rotary_dim / 2)
@@ -282,7 +282,7 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
                 std::optional<const at::Tensor> & /*leftpad_k_*/,   // batch_size
                 std::optional<at::Tensor> &block_table_,            // batch_size x max_num_blocks_per_seq
                 std::optional<at::Tensor> &alibi_slopes_,           // num_heads or batch_size x num_heads
-                std::optional<at::Tensor> &out_,                    // batch_size x seqlen_q x num_heads x v_head_size
+                std::optional<at::Tensor> &out_,                    // batch_size x seqlen_q x num_heads x head_size_v
                 const float softmax_scale,
                 bool is_causal,
                 int window_size_left,
@@ -321,7 +321,7 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
     int seqlen_q = sizes[1];
     int num_heads = sizes[2];
     const int head_size_og = sizes[3];
-    const int v_head_size_og = vcache.size(3);
+    const int head_size_v_og = vcache.size(3);
 
     const int max_num_blocks_per_seq = !paged_KV ? 0 : block_table.size(1);
     const int num_blocks = !paged_KV ? 0 : kcache.size(0);
@@ -332,7 +332,7 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
     const int batch_size_c = !paged_KV ? kcache.size(0) : batch_size;
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
     TORCH_CHECK(head_size_og <= 256, "FlashAttention forward only supports head dimension at most 256");
-    TORCH_CHECK(v_head_size_og <= 256, "FlashAttention forward only supports head dimension at most 256");
+    TORCH_CHECK(head_size_v_og <= 256, "FlashAttention forward only supports head dimension at most 256");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
     // causal=true is the same as causal=false in this case
@@ -371,10 +371,10 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
     CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size_og);
     if (!paged_KV) {
         CHECK_SHAPE(kcache, batch_size_c, seqlen_k, num_heads_k, head_size_og);
-        CHECK_SHAPE(vcache, batch_size_c, seqlen_k, num_heads_k, v_head_size_og);
+        CHECK_SHAPE(vcache, batch_size_c, seqlen_k, num_heads_k, head_size_v_og);
     } else {
         CHECK_SHAPE(kcache, num_blocks, page_block_size, num_heads_k, head_size_og);
-        CHECK_SHAPE(vcache, num_blocks, page_block_size, num_heads_k, v_head_size_og);
+        CHECK_SHAPE(vcache, num_blocks, page_block_size, num_heads_k, head_size_v_og);
         CHECK_SHAPE(block_table, batch_size, max_num_blocks_per_seq);
     }
 
@@ -386,15 +386,15 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
         q_padded = q;
         kcache_padded = kcache;
     }
-    if (v_head_size_og % 8 != 0) {
-        vcache_padded = torch::nn::functional::pad(vcache, torch::nn::functional::PadFuncOptions({0, 8 - v_head_size_og % 8}));
+    if (head_size_v_og % 8 != 0) {
+        vcache_padded = torch::nn::functional::pad(vcache, torch::nn::functional::PadFuncOptions({0, 8 - head_size_v_og % 8}));
     } else {
         vcache_padded = vcache;
     }
 
     auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
     const int head_size_8x = round_multiple(head_size_og, 8);
-    const int v_head_size_8x = round_multiple(v_head_size_og, 8);
+    const int head_size_v_8x = round_multiple(head_size_v_og, 8);
 
     at::Tensor out;
     if (out_.has_value()) {
@@ -402,10 +402,10 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
         TORCH_CHECK(out.dtype() == q_dtype, "Output must have the same dtype as inputs");
         CHECK_DEVICE(out);
         TORCH_CHECK(out.stride(-1) == 1, "Output tensor must have contiguous last dimension");
-        CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, v_head_size_og);
+        CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, head_size_v_og);
         if (head_size_og % 8 != 0) { out = torch::empty_like(q_padded); }
     } else {
-        out = torch::empty({q_padded.size(0), q_padded.size(1), q_padded.size(2), v_head_size_8x}, q_padded.options());
+        out = torch::empty({q_padded.size(0), q_padded.size(1), q_padded.size(2), head_size_v_8x}, q_padded.options());
     }
 
     // Otherwise the kernel will be launched from cuda:0 device
@@ -432,14 +432,14 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
         TORCH_CHECK(v.stride(-1) == 1, "Value tensor must have contiguous last dimension");
         seqlen_knew = k.size(1);
         CHECK_SHAPE(k, batch_size, seqlen_knew, num_heads_k, head_size_og);
-        CHECK_SHAPE(v, batch_size, seqlen_knew, num_heads_k, v_head_size_og);
+        CHECK_SHAPE(v, batch_size, seqlen_knew, num_heads_k, head_size_v_og);
         if (head_size_og % 8 != 0) {
             k_padded = torch::nn::functional::pad(k, torch::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
         } else {
             k_padded = k;
         }
-        if (v_head_size_og % 8 != 0) {
-            v_padded = torch::nn::functional::pad(v, torch::nn::functional::PadFuncOptions({0, 8 - v_head_size_og % 8}));
+        if (head_size_v_og % 8 != 0) {
+            v_padded = torch::nn::functional::pad(v, torch::nn::functional::PadFuncOptions({0, 8 - head_size_v_og % 8}));
         } else {
             v_padded = v;
         }
@@ -489,14 +489,14 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
 
     // Keep references to these tensors to extend their lifetime
     auto softmax_lse_accum = torch::empty({num_splits, batch_size, num_heads, seqlen_q}, opts.dtype(at::kFloat));
-    auto out_accum = torch::empty({num_splits, batch_size, num_heads, seqlen_q, v_head_size_8x}, opts.dtype(at::kFloat));
+    auto out_accum = torch::empty({num_splits, batch_size, num_heads, seqlen_q, head_size_v_8x}, opts.dtype(at::kFloat));
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
     ck_tile::stream_config stream_config{stream};
 
     if (seqlen_knew > 0 || rotary_dim > 0) {
         auto appendkv_traits =
-            get_ck_fmha_fwd_appendkv_traits(q_dtype_str, head_size_8x, v_head_size_8x, rotary_dim, is_rotary_interleaved);
+            get_ck_fmha_fwd_appendkv_traits(q_dtype_str, head_size_8x, head_size_v_8x, rotary_dim, is_rotary_interleaved);
 
         auto appendkv_args =
             get_ck_fmha_fwd_appendkv_args(
@@ -506,7 +506,7 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
                 num_heads,
                 num_heads_k,
                 head_size_8x,
-                v_head_size_8x,
+                head_size_v_8x,
                 rotary_dim,
                 mask.type != mask_enum::no_mask,
                 page_block_size,
@@ -533,7 +533,7 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
 
     // we use splitkv even num_splits == 1, because fmha_fwd() does not support seqlen_k_ in batch mode
     auto splitkv_traits =
-        get_ck_fmha_fwd_splitkv_traits(mask, q_dtype_str, head_size_8x, v_head_size_8x, has_lse, alibi_slopes_.has_value());
+        get_ck_fmha_fwd_splitkv_traits(mask, q_dtype_str, head_size_8x, head_size_v_8x, has_lse, alibi_slopes_.has_value());
 
     auto splitkv_args =
         get_ck_fmha_fwd_splitkv_args(
@@ -545,7 +545,7 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
             num_heads,
             num_heads_k,
             head_size_8x,
-            v_head_size_8x,
+            head_size_v_8x,
             page_block_size,
             num_splits,
             softmax_scale,
@@ -563,19 +563,19 @@ mha_fwd_kvcache(at::Tensor &q,                                      // batch_siz
 
     fmha_fwd_splitkv(splitkv_traits, splitkv_args, stream_config);
 
-    if (head_size_og % 8 != 0 || v_head_size_og % 8 != 0) {
-        out = out.index({"...", torch::indexing::Slice(torch::indexing::None, v_head_size_og)});
+    if (head_size_og % 8 != 0 || head_size_v_og % 8 != 0) {
+        out = out.index({"...", torch::indexing::Slice(torch::indexing::None, head_size_v_og)});
         if (out_.has_value()) { out_.value().copy_(out); }
         if (k_.has_value()) {
             // It's expensive to copy the KV cache here for the case where head size not divisible by 8,
             // but we don't expect to get this case in practice. This is just so that the code works for that case.
             kcache.copy_(kcache_padded.index({"...", torch::indexing::Slice(torch::indexing::None, head_size_og)}));
-            vcache.copy_(vcache_padded.index({"...", torch::indexing::Slice(torch::indexing::None, v_head_size_og)}));
+            vcache.copy_(vcache_padded.index({"...", torch::indexing::Slice(torch::indexing::None, head_size_v_og)}));
         }
     }
 
     if (seqlenq_ngroups_swapped) {
-        out = out.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, v_head_size_og});
+        out = out.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size_v_og});
         softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
     }
 

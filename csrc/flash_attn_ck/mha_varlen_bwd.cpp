@@ -10,13 +10,13 @@
 fmha_bwd_traits get_ck_fmha_varlen_bwd_traits(const mask_info &mask,
                                               std::string dtype,
                                               int head_size,
-                                              int v_head_size,
+                                              int head_size_v,
                                               bool has_dropout,
                                               bool enable_alibi,
                                               bool deterministic)
 {
     return fmha_bwd_traits{head_size,
-                           v_head_size,
+                           head_size_v,
                            dtype,
                            true, // is_group_mode
                            mask.type,
@@ -202,15 +202,15 @@ fmha_bwd_args get_ck_fmha_varlen_bwd_args(const mask_info &mask,
 }
 
 std::vector<at::Tensor>
-mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads x v_head_size
+mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads x head_size_v
                const at::Tensor &q,                      // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
                const at::Tensor &k,                      // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
-               const at::Tensor &v,                      // total_k x num_heads_k x v_head_size, total_k := \sum_{i=0}^{b} s_i
-               const at::Tensor &out,                    // total_q x num_heads x v_head_size
+               const at::Tensor &v,                      // total_k x num_heads_k x head_size_v, total_k := \sum_{i=0}^{b} s_i
+               const at::Tensor &out,                    // total_q x num_heads x head_size_v
                const at::Tensor &softmax_lse,            // b x h x s   softmax logsumexp
                std::optional<at::Tensor> &dq_,           // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
                std::optional<at::Tensor> &dk_,           // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
-               std::optional<at::Tensor> &dv_,           // total_k x num_heads_k x v_head_size, total_k := \sum_{i=0}^{b} s_i
+               std::optional<at::Tensor> &dv_,           // total_k x num_heads_k x head_size_v, total_k := \sum_{i=0}^{b} s_i
                const at::Tensor &cu_seqlens_q,           // b+1
                const at::Tensor &cu_seqlens_k,           // b+1
                std::optional<at::Tensor> &alibi_slopes_, // num_heads or b x num_heads
@@ -266,15 +266,15 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     const int batch_size = cu_seqlens_q.numel() - 1;
     const int num_heads = sizes[1];
     const int head_size = sizes[2];
-    const int v_head_size = v.size(2);
+    const int head_size_v = v.size(2);
     const int total_k = k.size(0);
     const int num_heads_k = k.size(1);
     const int num_heads_v = v.size(1);
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
     TORCH_CHECK(head_size % 8 == 0, "head_size should be a multiple of 8");
     TORCH_CHECK(head_size <= 256, "CK FlashAttention backward only supports head dimension at most 256");
-    TORCH_CHECK(v_head_size % 8 == 0, "v_head_size should be a multiple of 8");
-    TORCH_CHECK(v_head_size <= 256, "CK FlashAttention backward only supports head dimension at most 256");
+    TORCH_CHECK(head_size_v % 8 == 0, "head_size_v should be a multiple of 8");
+    TORCH_CHECK(head_size_v <= 256, "CK FlashAttention backward only supports head dimension at most 256");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
     TORCH_CHECK(num_heads_v == num_heads_k, "Number of heads in key/value must be equal");
 
@@ -299,9 +299,9 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     // dq_, dk_, dv_ are also padded tensor
     CHECK_SHAPE(q, total_q, num_heads, head_size);
     CHECK_SHAPE(k, total_k, num_heads_k, head_size);
-    CHECK_SHAPE(v, total_k, num_heads_k, v_head_size);
-    CHECK_SHAPE(out, total_q, num_heads, v_head_size);
-    CHECK_SHAPE(dout, total_q, num_heads, v_head_size);
+    CHECK_SHAPE(v, total_k, num_heads_k, head_size_v);
+    CHECK_SHAPE(out, total_q, num_heads, head_size_v);
+    CHECK_SHAPE(dout, total_q, num_heads, head_size_v);
     CHECK_SHAPE(cu_seqlens_q, batch_size + 1);
     CHECK_SHAPE(cu_seqlens_k, batch_size + 1);
 
@@ -329,7 +329,7 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
         TORCH_CHECK(dv.dtype() == q_dtype, "dv must have the same dtype as q");
         CHECK_DEVICE(dv);
         TORCH_CHECK(dv.stride(-1) == 1, "dv must have contiguous last dimension");
-        CHECK_SHAPE(dv, total_k, num_heads_k, v_head_size);
+        CHECK_SHAPE(dv, total_k, num_heads_k, head_size_v);
     } else {
         dv = torch::empty_like(v);
     }
@@ -340,18 +340,19 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     auto softmax_d = torch::empty({batch_size, num_heads, max_seqlen_q}, opts.dtype(at::kFloat));
     at::Tensor dq_accum;
 
+    const ck_tile::index_t head_size_max = std::max(head_size, head_size_v);
     if (!deterministic) {
-        dq_accum = torch::zeros({1, total_q, num_heads, head_size}, opts.dtype(at::kFloat));
+        dq_accum = torch::zeros({1, total_q, num_heads, head_size_max}, opts.dtype(at::kFloat));
     } else {
-        const ck_tile::index_t kN0 = head_size <= 128 ? 128 : 64;
+        const ck_tile::index_t kN0 = head_size_max <= 128 ? 128 : 64;
         const ck_tile::index_t nsplits = ck_tile::integer_divide_ceil(max_seqlen_k, kN0);
-        dq_accum = torch::zeros({nsplits, total_q, num_heads, head_size}, opts.dtype(at::kFloat));
+        dq_accum = torch::zeros({nsplits, total_q, num_heads, head_size_max}, opts.dtype(at::kFloat));
     }
 
     at::Tensor dk_expanded, dv_expanded;
     if (num_heads_k != num_heads) {  // MQA / GQA
         dk_expanded = torch::empty({total_k, num_heads, head_size}, opts);
-        dv_expanded = torch::empty({total_k, num_heads, v_head_size}, opts);
+        dv_expanded = torch::empty({total_k, num_heads, head_size_v}, opts);
     } else {
         dk_expanded = dk;
         dv_expanded = dv;
@@ -390,7 +391,7 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
         ck_tile::stream_config stream_config{stream};
 
         auto traits =
-            get_ck_fmha_varlen_bwd_traits(mask, q_dtype_str, head_size, v_head_size, is_dropout, alibi_slopes_.has_value(), deterministic);
+            get_ck_fmha_varlen_bwd_traits(mask, q_dtype_str, head_size, head_size_v, is_dropout, alibi_slopes_.has_value(), deterministic);
 
         auto args =
             get_ck_fmha_varlen_bwd_args(
@@ -401,7 +402,7 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
                 num_heads,
                 num_heads_k,
                 head_size,
-                v_head_size,
+                head_size_v,
                 q,
                 k,
                 v,
@@ -432,7 +433,7 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     // For MQA/GQA we need to sum dK and dV across the groups
     if (num_heads_k != num_heads) {
         at::sum_out(dk, at::reshape(dk_expanded, {total_k, num_heads_k, num_heads / num_heads_k, head_size}), {2});
-        at::sum_out(dv, at::reshape(dv_expanded, {total_k, num_heads_k, num_heads / num_heads_k, v_head_size}), {2});
+        at::sum_out(dv, at::reshape(dv_expanded, {total_k, num_heads_k, num_heads / num_heads_k, head_size_v}), {2});
     }
 
     return { dq, dk, dv, softmax_d };
