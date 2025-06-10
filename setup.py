@@ -313,16 +313,16 @@ elif not SKIP_CUDA_BUILD and IS_ROCM:
 
     # Skips CK C++ extension compilation if using Triton Backend
     if not SKIP_CK_BUILD:
-        ck_dir = "csrc/composable_kernel"
+        ck_dir = "csrc/flash_attn_ck"
 
         #use codegen get code dispatch
         if not os.path.exists("./build"):
             os.makedirs("build")
 
-        subprocess.run([sys.executable, f"{ck_dir}/example/ck_tile/01_fmha/generate.py", "-d", "fwd", "--output_dir", "build", "--receipt", "2"], check=True)
-        subprocess.run([sys.executable, f"{ck_dir}/example/ck_tile/01_fmha/generate.py", "-d", "fwd_appendkv", "--output_dir", "build", "--receipt", "2"], check=True)
-        subprocess.run([sys.executable, f"{ck_dir}/example/ck_tile/01_fmha/generate.py", "-d", "fwd_splitkv", "--output_dir", "build", "--receipt", "2"], check=True)
-        subprocess.run([sys.executable, f"{ck_dir}/example/ck_tile/01_fmha/generate.py", "-d", "bwd", "--output_dir", "build", "--receipt", "2"], check=True)
+        subprocess.run([sys.executable, f"{ck_dir}/generate.py", "-d", "fwd", "--output_dir", "build", "--receipt", "2"], check=True)
+        subprocess.run([sys.executable, f"{ck_dir}/generate.py", "-d", "fwd_appendkv", "--output_dir", "build", "--receipt", "2"], check=True)
+        subprocess.run([sys.executable, f"{ck_dir}/generate.py", "-d", "fwd_splitkv", "--output_dir", "build", "--receipt", "2"], check=True)
+        subprocess.run([sys.executable, f"{ck_dir}/generate.py", "-d", "bwd", "--output_dir", "build", "--receipt", "2"], check=True)
 
         # Check, if ATen/CUDAGeneratorImpl.h is found, otherwise use ATen/cuda/CUDAGeneratorImpl.h
         # See https://github.com/pytorch/pytorch/pull/70650
