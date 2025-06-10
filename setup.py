@@ -153,7 +153,7 @@ else:
     if IS_ROCM:
         if not SKIP_CK_BUILD:
             assert (
-                os.path.exists("csrc/composable_kernel/example/ck_tile/01_fmha/generate.py")
+                os.path.exists("csrc/flash_attn_ck/generate.py")
             ), "csrc/composable_kernel is missing, please use source distribution or git clone"
     else:
         assert (
