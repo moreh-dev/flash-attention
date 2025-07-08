@@ -111,7 +111,7 @@ using fmha_bwd_dq_dk_dv_kernel_{F_idx} =
                                  fmha_bwd_dk_epilogue_{F_idx},
                                  fmha_bwd_dv_epilogue_{F_idx}>;
 
-using dq_dk_dv_trait_{F_idx} = fmha_bwd_dq_dk_dv_traits_<{F_hdim},
+using dq_dk_dv_trait_{F_idx} = fmha_bwd_dq_dk_dv_traits_<{F_hdim}{F_bhdv},
                                                          {F_dtype},
                                                          {F_mode},
                                                          {F_pipeline_enum},
@@ -188,15 +188,15 @@ FMHA_BWD_API_PER_DTYPE="""    {F_if}(t.data_type.compare(\"{F_dtype}\") == 0){{
 {F_hdim_case}
     }}
 """
-FMHA_BWD_API_PER_HDIM_CASE="""        {F_if} (t.hdim_q <= {F_hdim} && t.hdim_v <= {F_hdim}) {{
+FMHA_BWD_API_PER_HDIM_CASE="""        {F_if} (t.hdim_q <= {F_hdim} && t.hdim_v <= {F_hdim_v}) {{
 {F_inner_dispatch}
         }}
 """
 
 FMHA_BWD_API_INNER_DISPATCH="""            {F_if}((t.is_group_mode == {F_mode}) && ({F_mask_check}) && (t.bias_type == {F_bias_check}) && (t.has_dbias == {F_dbias}) && ({F_dropout_check}) &&
                         ({F_scheck}) && ({F_skcheck}) && ({F_dcheck}) && ({F_dvcheck}) && (t.is_deterministic == {F_deterministic})) {{
-                using dot_do_o_trait_ = fmha_bwd_dot_do_o_traits_<{F_hdim}, {F_dtype}, {F_mode}, {F_spad1}, {F_dvpad}>;
-                using dq_dk_dv_trait_ = fmha_bwd_dq_dk_dv_traits_<{F_hdim}, {F_dtype}, {F_mode}, {F_pipeline_enum}, {F_mask}, {F_dropout}, {F_bias}, {F_dbias}, {F_spad0}, {F_skpad}, {F_dpad}, {F_dvpad}, {F_deterministic}>;
+                using dot_do_o_trait_ = fmha_bwd_dot_do_o_traits_<{F_hdim_v}, {F_dtype}, {F_mode}, {F_spad1}, {F_dvpad}>;
+                using dq_dk_dv_trait_ = fmha_bwd_dq_dk_dv_traits_<{F_hdim}{F_hdim_v}, {F_dtype}, {F_mode}, {F_pipeline_enum}, {F_mask}, {F_dropout}, {F_bias}, {F_dbias}, {F_spad0}, {F_skpad}, {F_dpad}, {F_dvpad}, {F_deterministic}>;
                 using convert_dq_trait_ = fmha_bwd_convert_dq_traits_<{F_hdim}, {F_dtype}, {F_mode}, {F_spad1}, {F_dpad}, {F_deterministic}>;
                 r = fmha_bwd_<dot_do_o_trait_, dq_dk_dv_trait_, convert_dq_trait_>(s, a);
                 return r;
@@ -260,21 +260,21 @@ class FmhaBwdApiPool:
 
     def register_dq_dk_dv_traits(self, trait : FmhaBwdDQDKDVApiTrait) -> None:
         # TODO: do we need to check duplication?
+        key = (trait.hdim, trait.bhdv)
         if trait.dtype not in self.dq_dk_dv_pool.keys():
             self.dq_dk_dv_pool[trait.dtype] = dict()
-        if trait.hdim not in self.dq_dk_dv_pool[trait.dtype].keys():
-            self.dq_dk_dv_pool[trait.dtype][trait.hdim] = list()
+        if key not in self.dq_dk_dv_pool[trait.dtype].keys():
+            self.dq_dk_dv_pool[trait.dtype][key] = list()
 
-        self.dq_dk_dv_pool[trait.dtype][trait.hdim].append(copy.copy(trait))
+        self.dq_dk_dv_pool[trait.dtype][key].append(copy.copy(trait))
 
     @property
     def api(self) -> str:
         per_dtypes=str()
         for i, dtype in enumerate(self.dq_dk_dv_pool.keys()):
             per_hdim_case=str()
-            for j, hdim in enumerate(self.dq_dk_dv_pool[dtype].keys()):
-                traits=self.dq_dk_dv_pool[dtype][hdim]
-                hdim_int = int(hdim)
+            for j, (hdim, hdim_v) in enumerate(self.dq_dk_dv_pool[dtype].keys()):
+                traits=self.dq_dk_dv_pool[dtype][(hdim, hdim_v)]
                 inners=str()
                 for k, trait in enumerate(traits):
                     if_k = 'if' if k == 0 else 'else if'
@@ -286,10 +286,10 @@ class FmhaBwdApiPool:
                                     F_bias=BIAS_MAP[trait.bias], F_dbias=BOOL_MAP[trait.dbias], F_dropout_check=DROPOUT_CHECK_MAP[trait.dropout], F_dropout=DROPOUT_MAP[trait.dropout],
                                     F_scheck=trait.scheck(spad1=spad1), F_skcheck=trait.skcheck, F_dcheck=trait.dcheck, F_dvcheck=trait.dvcheck, F_hdim=hdim, F_dtype=BWD_DTYPE_MAP[dtype],
                                     F_spad0=BOOL_MAP[trait.spad], F_spad1=BOOL_MAP[spad1], F_skpad=BOOL_MAP[trait.skpad], F_dpad=BOOL_MAP[trait.dpad], F_dvpad=BOOL_MAP[trait.dvpad],
-                                    F_deterministic=BOOL_MAP[trait.deterministic])
+                                    F_deterministic=BOOL_MAP[trait.deterministic], F_hdim_v=hdim_v)
 
                 if_j = 'if' if j == 0 else 'else if'
-                per_hdim_case = per_hdim_case + FMHA_BWD_API_PER_HDIM_CASE.format(F_if=if_j, F_hdim=hdim, F_inner_dispatch=inners)
+                per_hdim_case = per_hdim_case + FMHA_BWD_API_PER_HDIM_CASE.format(F_if=if_j, F_hdim=hdim, F_hdim_v=hdim_v, F_inner_dispatch=inners)
             if_i = 'if' if i == 0 else 'else if'
             per_dtypes = per_dtypes + FMHA_BWD_API_PER_DTYPE.format(F_if=if_i, F_dtype=dtype, F_hdim_case=per_hdim_case)
         if not per_dtypes:
@@ -411,7 +411,7 @@ class FmhaBwdDQDKDVKernel:
             if n != '' : n = 'p' + n
             return n
         pn = pad_name()
-        n = f"fmha_bwd_d{self.F_hdim}_{self.F_dtype}_{self.F_mode}_" + self.F_tile.name + f'_{self.F_pipeline}'
+        n = f"fmha_bwd_d{self.F_hdim}_dv{self.F_tile.F_bhdv}_{self.F_dtype}_{self.F_mode}_" + self.F_tile.name + f'_{self.F_pipeline}'
         if pn != '' : n += f'_{pn}'
         else: n += '_npad'
 
@@ -464,14 +464,16 @@ class FmhaBwdDQDKDVKernel:
 def get_fmha_bwd_dq_dk_dv_tile_ppl_dict_from_dtype(dtype : str) -> Optional[dict]:
     if dtype == 'fp16' or dtype == 'bf16':
         return {
-            '32'  : [FmhaBwdDQDKDVTileSize( 32, 128,  32, 32,  32, 32, 64,  32,  32, 1, 4, 1, 4, 1, 1, 2, 2, 1, 16, 16, 32, 16, 16, 16, 1),
-                        "kr_ktr_vr_iglp", "kr_ktr_vr"],
-            '64'  : [FmhaBwdDQDKDVTileSize( 32, 128,  64, 32,  64, 32, 32,  64,  64, 1, 4, 1, 4, 1, 1, 1, 4, 1, 16, 16, 32, 16, 16, 16, 1),
-                        "kr_ktr_vr_iglp", "kr_ktr_vr"],
-            '128' : [FmhaBwdDQDKDVTileSize( 16, 128, 128, 16, 128, 16, 32, 128, 128, 1, 4, 1, 4, 1, 1, 1, 4, 1, 16, 16, 32, 16, 16, 16, 1),
-                        "kr_ktr_vr_iglp", "kr_ktr_vr"],
-            '256' : [FmhaBwdDQDKDVTileSize( 16,  64, 256, 16, 256, 16, 32, 256, 256, 1, 4, 1, 4, 1, 1, 1, 4, 1, 16, 16, 32, 16, 16, 16, 1),
-                        "kr_ktr_vr_iglp", "kr_ktr_vr"]
+            (32, 32)   : [FmhaBwdDQDKDVTileSize( 32, 128,  32, 32,  32, 32, 64,  32,  32, 1, 4, 1, 4, 1, 1, 2, 2, 1, 16, 16, 32, 16, 16, 16, 1),
+                         "kr_ktr_vr_iglp", "kr_ktr_vr"],
+            (64, 64)   : [FmhaBwdDQDKDVTileSize( 32, 128,  64, 32,  64, 32, 32,  64,  64, 1, 4, 1, 4, 1, 1, 1, 4, 1, 16, 16, 32, 16, 16, 16, 1),
+                         "kr_ktr_vr_iglp", "kr_ktr_vr"],
+            (128, 128) : [FmhaBwdDQDKDVTileSize( 16, 128, 128, 16, 128, 16, 32, 128, 128, 1, 4, 1, 4, 1, 1, 1, 4, 1, 16, 16, 32, 16, 16, 16, 1),
+                         "kr_ktr_vr_iglp", "kr_ktr_vr"],
+            (128, 256) : [FmhaBwdDQDKDVTileSize( 16, 128, 128, 16, 256, 16, 32, 128, 256, 1, 4, 1, 4, 1, 1, 1, 4, 1, 16, 16, 32, 16, 16, 16, 1),
+                         "kr_ktr_vr_iglp", "kr_ktr_vr"],
+            (256, 256) : [FmhaBwdDQDKDVTileSize( 16,  64, 256, 16, 256, 16, 32, 256, 256, 1, 4, 1, 4, 1, 1, 1, 4, 1, 16, 16, 32, 16, 16, 16, 1),
+                         "kr_ktr_vr_iglp", "kr_ktr_vr"]
         }
     else:
         return None
@@ -486,10 +488,7 @@ def get_bwd_dq_dk_dv_blobs(kernel_filter : Optional[str], receipt, mask_impl) ->
         d = get_fmha_bwd_dq_dk_dv_tile_ppl_dict_from_dtype(dtype)
         if d == None:
             continue
-        for hdim_str, mode, mask, bias, dbias, dropout, spad, skpad, dpad, dvpad, deterministic in itertools.product(d.keys(), MODE_MAP.keys(), get_mask_map(mask_impl).keys(), BIAS_MAP.keys(), ["t", "f"], DROPOUT_MAP.keys(), ["t", "f"], ["t", "f"], ["t", "f"], ["t", "f"], ["t", "f"]):
-            tile = d[hdim_str][0]
-            ppl = d[hdim_str][1]
-            hdim = int(hdim_str)
+        for ((hdim, _), [tile, ppl, ppl2]), mode, mask, bias, dbias, dropout, spad, skpad, dpad, dvpad, deterministic in itertools.product(d.items(), MODE_MAP.keys(), get_mask_map(mask_impl).keys(), BIAS_MAP.keys(), ["t", "f"], DROPOUT_MAP.keys(), ["t", "f"], ["t", "f"], ["t", "f"], ["t", "f"], ["t", "f"]):
             if (mode == "group") and (spad == "f" or skpad == "f"):
                 continue
             if ((bias == "no" or bias == "alibi") and dbias == "t"):
@@ -497,7 +496,7 @@ def get_bwd_dq_dk_dv_blobs(kernel_filter : Optional[str], receipt, mask_impl) ->
             if ("wg32" in dropout):
                 continue
             if (dpad == "t" or dvpad == "t"):
-                ppl = d[hdim_str][2]
+                ppl = ppl2
             k = FmhaBwdDQDKDVKernel(F_idx=0, F_hdim=hdim, F_dtype=dtype, F_tile=tile,
                                 F_spad=spad, F_skpad=skpad, F_dpad=dpad, F_dvpad=dvpad,
                                 F_bias=bias, F_dbias=dbias, F_dropout=dropout, F_mask=mask, F_mode=mode,
@@ -567,7 +566,7 @@ using fmha_bwd_dot_do_o_pipeline_problem_{F_idx} = ck_tile::BlockFmhaBwdOGradDot
     typename FmhaBwdTypeConfig<fmha_dtype_{F_idx}>::OGradDataType,
     typename FmhaBwdTypeConfig<fmha_dtype_{F_idx}>::DDataType,
     /* BlockSize = */ 64,
-    {F_hdim},
+    {F_hdim_v},
     {F_mode},
     fmha_bwd_dot_do_o_trait_{F_idx}>;
 
@@ -578,7 +577,7 @@ using fmha_bwd_dot_do_o_kernel_{F_idx} =
     ck_tile::FmhaBwdOGradDotOKernel<fmha_bwd_dot_do_o_{F_idx}>;
 
 using dot_do_o_trait_{F_idx} =
-    fmha_bwd_dot_do_o_traits_<{F_hdim}, {F_dtype}, {F_mode}, {F_spad}, {F_dvpad}>;
+    fmha_bwd_dot_do_o_traits_<{F_hdim_v}, {F_dtype}, {F_mode}, {F_spad}, {F_dvpad}>;
 
 #include <iostream>
 
@@ -617,7 +616,7 @@ std::string fmha_bwd_dot_do_o_get_name_<dot_do_o_trait_{F_idx}>()
 @dataclass
 class FmhaBwdOGradDotOKernel:
     F_idx       : int  # this is not a tunable, but a counter to differentiate symbol
-    F_hdim      : int  # hdim
+    F_hdim_v    : int  # vhdim
     F_dtype     : str  # data type
     F_spad      : str  # true/false
     F_dvpad     : str  #
@@ -629,7 +628,7 @@ class FmhaBwdOGradDotOKernel:
         return FMHA_BWD_KERNEL_HEADER + \
             FMHA_BWD_DOT_DO_O_KERNEL_BODY.format(
                 F_idx       = self.F_idx,
-                F_hdim      = self.F_hdim,
+                F_hdim_v    = self.F_hdim_v,
                 F_dtype     = BWD_DTYPE_MAP[self.F_dtype],
                 F_spad      = BOOL_MAP[self.F_spad],
                 F_dvpad     = BOOL_MAP[self.F_dvpad],
@@ -645,7 +644,7 @@ class FmhaBwdOGradDotOKernel:
             if n != '' : n = 'p' + n
             return n
         pn = pad_name()
-        n = f"fmha_bwd_dot_do_o_d{self.F_hdim}_{self.F_dtype}_{self.F_mode}_o{self.F_occupancy}"
+        n = f"fmha_bwd_dot_do_o_d{self.F_hdim_v}_{self.F_dtype}_{self.F_mode}_o{self.F_occupancy}"
         if pn != '' : n += f'_{pn}'
         else: n += '_npad'
         return n
@@ -666,13 +665,12 @@ def get_bwd_dot_do_o_blobs(kernel_filter : Optional[str], receipt) -> List[FmhaB
         d = get_fmha_bwd_dq_dk_dv_tile_ppl_dict_from_dtype(dtype)
         if d == None:
             continue
-        for hdim_str, mode, spad, dvpad in itertools.product(d.keys(), MODE_MAP.keys(), ["t", "f"], ["t", "f"]):
-            hdim = int(hdim_str)
+        for ((hdim, hdim_v), [tile, _, _]), mode, spad, dvpad in itertools.product(d.items(), MODE_MAP.keys(), ["t", "f"], ["t", "f"]):
             if (mode == "group" and spad == "f"):
                 continue
-            k = FmhaBwdOGradDotOKernel(F_idx=0, F_hdim=hdim, F_dtype=dtype,
+            k = FmhaBwdOGradDotOKernel(F_idx=0, F_hdim_v=hdim_v, F_dtype=dtype,
                                 F_spad=spad, F_dvpad=dvpad, F_mode=mode,
-                                F_occupancy=get_occupancy(dtype, hdim))
+                                F_occupancy=get_occupancy(dtype, hdim_v))
             if kernel_filter != '':
                 if not fnmatch.fnmatch(k.name, kernel_filter):
                     continue
@@ -823,9 +821,7 @@ def get_bwd_convert_dq_blobs(kernel_filter : Optional[str], receipt) -> List[Fmh
         d = get_fmha_bwd_dq_dk_dv_tile_ppl_dict_from_dtype(dtype)
         if d == None:
             continue
-        for hdim_str, mode, spad, dpad, deterministic in itertools.product(d.keys(), MODE_MAP.keys(), ["t", "f"], ["t", "f"], ["t", "f"]):
-            hdim = int(hdim_str)
-            tile = d[hdim_str][0]
+        for ((hdim, hdim_v), [tile, _, _]), mode, spad, dpad, deterministic in itertools.product(d.items(), MODE_MAP.keys(), ["t", "f"], ["t", "f"], ["t", "f"]):
             if (mode == "group" and spad == "f"):
                 continue
             k = FmhaBwdConvertQGradKernel(F_idx=0, F_hdim=hdim, F_dtype=dtype, F_bm0=64, F_bn0=tile.F_bn0,
