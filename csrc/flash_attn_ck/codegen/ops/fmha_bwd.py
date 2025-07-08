@@ -193,6 +193,11 @@ FMHA_BWD_API_PER_HDIM_CASE="""        {F_if} (t.hdim_q <= {F_hdim} && t.hdim_v <
         }}
 """
 
+FMHA_BWD_API_PER_HDIM_CASE_NO_DROPOUT="""        {F_if} (t.hdim_q <= {F_hdim} && t.hdim_v <= {F_hdim_v} && (t.has_dropout == false) && (t.bias_type == bias_enum::no_bias)) {{
+{F_inner_dispatch}
+        }}
+"""
+
 FMHA_BWD_API_INNER_DISPATCH="""            {F_if}((t.is_group_mode == {F_mode}) && ({F_mask_check}) && (t.bias_type == {F_bias_check}) && (t.has_dbias == {F_dbias}) && ({F_dropout_check}) &&
                         ({F_scheck}) && ({F_skcheck}) && ({F_dcheck}) && ({F_dvcheck}) && (t.is_deterministic == {F_deterministic})) {{
                 using dot_do_o_trait_ = fmha_bwd_dot_do_o_traits_<{F_hdim_v}, {F_dtype}, {F_mode}, {F_spad1}, {F_dvpad}>;
@@ -207,7 +212,7 @@ FMHA_BWD_API_INNER_DISPATCH="""            {F_if}((t.is_group_mode == {F_mode}) 
 class FmhaBwdDQDKDVApiTrait:
     pipeline      : str
     # sync with fmha_bwd_traits<>, to generate fallback calls
-    hdim          : str
+    hdim          : int
     dtype         : str  # data type
     mode          : str  # value from MODE_MAP
     bm0           : int  # tile size along q seqlen (block size)
@@ -265,7 +270,6 @@ class FmhaBwdApiPool:
             self.dq_dk_dv_pool[trait.dtype] = dict()
         if key not in self.dq_dk_dv_pool[trait.dtype].keys():
             self.dq_dk_dv_pool[trait.dtype][key] = list()
-
         self.dq_dk_dv_pool[trait.dtype][key].append(copy.copy(trait))
 
     @property
@@ -289,7 +293,10 @@ class FmhaBwdApiPool:
                                     F_deterministic=BOOL_MAP[trait.deterministic], F_hdim_v=hdim_v)
 
                 if_j = 'if' if j == 0 else 'else if'
-                per_hdim_case = per_hdim_case + FMHA_BWD_API_PER_HDIM_CASE.format(F_if=if_j, F_hdim=hdim, F_hdim_v=hdim_v, F_inner_dispatch=inners)
+                if (hdim, hdim_v) == (128, 256) :
+                    per_hdim_case = per_hdim_case + FMHA_BWD_API_PER_HDIM_CASE_NO_DROPOUT.format(F_if=if_j, F_hdim=hdim, F_hdim_v=hdim_v, F_inner_dispatch=inners)
+                else:
+                    per_hdim_case = per_hdim_case + FMHA_BWD_API_PER_HDIM_CASE.format(F_if=if_j, F_hdim=hdim, F_hdim_v=hdim_v, F_inner_dispatch=inners)
             if_i = 'if' if i == 0 else 'else if'
             per_dtypes = per_dtypes + FMHA_BWD_API_PER_DTYPE.format(F_if=if_i, F_dtype=dtype, F_hdim_case=per_hdim_case)
         if not per_dtypes:
@@ -441,7 +448,7 @@ class FmhaBwdDQDKDVKernel:
 
     def api_trait(self) -> FmhaBwdDQDKDVApiTrait:
         return FmhaBwdDQDKDVApiTrait(pipeline=self.F_pipeline,
-                hdim=str(self.F_hdim),
+                hdim=self.F_hdim,
                 dtype=self.F_dtype,
                 mode=self.F_mode,
                 bm0=self.F_tile.F_bm0,
@@ -488,7 +495,7 @@ def get_bwd_dq_dk_dv_blobs(kernel_filter : Optional[str], receipt, mask_impl) ->
         d = get_fmha_bwd_dq_dk_dv_tile_ppl_dict_from_dtype(dtype)
         if d == None:
             continue
-        for ((hdim, _), [tile, ppl, ppl2]), mode, mask, bias, dbias, dropout, spad, skpad, dpad, dvpad, deterministic in itertools.product(d.items(), MODE_MAP.keys(), get_mask_map(mask_impl).keys(), BIAS_MAP.keys(), ["t", "f"], DROPOUT_MAP.keys(), ["t", "f"], ["t", "f"], ["t", "f"], ["t", "f"], ["t", "f"]):
+        for ((hdim, hdim_v), [tile, ppl, ppl2]), mode, mask, bias, dbias, dropout, spad, skpad, dpad, dvpad, deterministic in itertools.product(d.items(), MODE_MAP.keys(), get_mask_map(mask_impl).keys(), BIAS_MAP.keys(), ["t", "f"], DROPOUT_MAP.keys(), ["t", "f"], ["t", "f"], ["t", "f"], ["t", "f"], ["t", "f"]):
             if (mode == "group") and (spad == "f" or skpad == "f"):
                 continue
             if ((bias == "no" or bias == "alibi") and dbias == "t"):
@@ -497,6 +504,10 @@ def get_bwd_dq_dk_dv_blobs(kernel_filter : Optional[str], receipt, mask_impl) ->
                 continue
             if (dpad == "t" or dvpad == "t"):
                 ppl = ppl2
+            if (hdim, hdim_v) == (128, 256) :
+                # NOTE: this is used to speedup deepseek prefill case, we don't gen training
+                if bias != 'no' or dropout != 'no':
+                    continue
             k = FmhaBwdDQDKDVKernel(F_idx=0, F_hdim=hdim, F_dtype=dtype, F_tile=tile,
                                 F_spad=spad, F_skpad=skpad, F_dpad=dpad, F_dvpad=dvpad,
                                 F_bias=bias, F_dbias=dbias, F_dropout=dropout, F_mask=mask, F_mode=mode,

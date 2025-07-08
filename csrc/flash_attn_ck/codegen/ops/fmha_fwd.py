@@ -123,6 +123,11 @@ FMHA_FWD_API_PER_HDIM_CASE="""        {F_if} (t.hdim_q <= {F_hdim} && t.hdim_v <
         }}
 """
 
+FMHA_FWD_API_PER_HDIM_CASE_NO_DROPOUT="""        {F_if} (t.hdim_q <= {F_hdim} && t.hdim_v <= {F_hdim_v} && (t.has_dropout == false) && (t.bias_type == bias_enum::no_bias)) {{
+{F_inner_dispatch}
+        }}
+"""
+
 FMHA_FWD_API_INNER_DISPATCH="""            {F_if}((t.is_group_mode == {F_mode}) && (t.is_v_rowmajor == {F_vlayout}) && ({F_mask_check}) && (t.bias_type == {F_bias_check}) && (t.has_lse == {F_lse})  && (t.has_dropout == {F_dropout}) && (t.do_fp8_static_quant == {F_squant}) &&
                         ({F_scheck}) && ({F_skcheck}) && ({F_dcheck}) && ({F_dvcheck})) {{
                 using trait_ = fmha_fwd_traits_<{F_hdim}, {F_dtype}, {F_mode}, {F_bm0}, {F_bn0}, {F_bk0}, {F_bn1}, {F_bk1}, {F_bk0max}, {F_vlayout}, {F_pipeline_enum}, {F_mask}, {F_bias}, {F_lse}, {F_dropout}, {F_squant}, {F_spad}, {F_skpad}, {F_dpad}, {F_dvpad}>;
@@ -134,7 +139,7 @@ FMHA_FWD_API_INNER_DISPATCH="""            {F_if}((t.is_group_mode == {F_mode}) 
 class FmhaFwdApiTrait:
     pipeline_tag : str
     # sync with fmha_fwd_traits<>, to generate fallback calls
-    hdim      : str
+    hdim      : int
     dtype     : str  # data type
     mode      : str  # value from MODE_MAP
     bm0       : int  # tile size along q seqlen (block size)
@@ -289,7 +294,10 @@ class FmhaFwdApiPool:
                                    F_bm0=trait.bm0, F_bn0=trait.bn0, F_bk0=trait.bk0, F_bn1=trait.bn1, F_bk1=trait.bk1, F_bk0max=trait.bk0max,
                                    F_hdim=hdim, F_dtype=FWD_DTYPE_MAP[dtype])
                 if_j = 'if' if j == 0 else 'else if'
-                per_hdim_case = per_hdim_case + FMHA_FWD_API_PER_HDIM_CASE.format(F_if=if_j, F_hdim=hdim, F_hdim_v=hdim_v, F_inner_dispatch=inners)
+                if (hdim, hdim_v) == (192, 128) or hdim == 160 or (hdim, hdim_v) == (128, 256) :
+                    per_hdim_case = per_hdim_case + FMHA_FWD_API_PER_HDIM_CASE_NO_DROPOUT.format(F_if=if_j, F_hdim=hdim, F_hdim_v=hdim_v, F_inner_dispatch=inners)
+                else :
+                    per_hdim_case = per_hdim_case + FMHA_FWD_API_PER_HDIM_CASE.format(F_if=if_j, F_hdim=hdim, F_hdim_v=hdim_v, F_inner_dispatch=inners)
             if_i = 'if' if i == 0 else 'else if'
             per_dtypes = per_dtypes + FMHA_FWD_API_PER_DTYPE.format(F_if=if_i, F_dtype=dtype, F_hdim_case=per_hdim_case)
         if not per_dtypes:
@@ -389,7 +397,7 @@ class FmhaFwdKernel:
     def api_trait(self) -> FmhaFwdApiTrait:
         return FmhaFwdApiTrait(
                 pipeline_tag=self.F_pipeline.tag,
-                hdim=str(self.F_hdim),
+                hdim=self.F_hdim,
                 dtype=self.F_dtype,
                 mode=self.F_mode,
                 bm0=self.F_tile.F_bm0,
@@ -495,7 +503,7 @@ def get_fwd_blobs(kernel_filter : Optional[str], receipt, optdim_list, mask_impl
                     if pipeline.F_spad != 't' or pipeline.F_skpad != 't':
                         # in group mode, spad/skpad must be true, since we can't predict if seqlen of current batch need pad or not
                         continue
-                if (hdim, hdim_v) == (192, 128) or hdim == 160:
+                if (hdim, hdim_v) == (192, 128) or hdim == 160 or (hdim, hdim_v) == (128, 256) :
                     # NOTE: this is used to speedup deepseek prefill case, we don't gen training
                     if pipeline.F_bias != 'no' or pipeline.F_dropout == 't':
                         continue
